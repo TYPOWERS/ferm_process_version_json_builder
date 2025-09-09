@@ -1,0 +1,7 @@
+﻿PEGASUS_TIMESERIES_FILE_003
+ObjectKey,B04
+VariableKey,_ClampPlateTemperatureHighAlarm.State
+2025-07-23T20:03:55.7201267,,Inapplicable
+2025-07-23T22:41:56.3775564,,Waiting enabling condition true
+2025-07-24T14:16:09.0211760,,Waiting enabling condition true for interval
+2025-07-24T14:46:18.1392688,,Active

@@ -1,0 +1,6 @@
+﻿PEGASUS_TIMESERIES_FILE_003
+ObjectKey,B04
+VariableKey,pH used for offset (pH)
+2025-07-24T18:20:05.1519623,6.05000019073486,pH offset from Assumed pH
+2025-07-24T19:41:12.0000000,6.04,pH offset from Off-line measurement
+2025-07-25T20:42:13.0000000,6.75,pH offset from Off-line measurement

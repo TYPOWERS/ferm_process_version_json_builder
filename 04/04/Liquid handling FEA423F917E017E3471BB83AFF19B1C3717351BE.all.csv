@@ -1,0 +1,13 @@
+﻿PEGASUS_TIMESERIES_FILE_003
+ObjectKey,B04
+VariableKey,Liquid handling
+2025-07-24T02:21:48.1257641,,Add liquid 165.60 mL from medium_b10%%%RET%%%%%%NL%%%(Moved tip position up to avoid going too deep into liquid. %%%RET%%%%%%NL%%%Consider using a method that explicitly works relative to the liquid level.%%%RET%%%%%%NL%%%If the method works relative to the liquid level then review any ZOffset used.%%%RET%%%%%%NL%%%Moved tip position up to avoid going too deep into liquid. %%%RET%%%%%%NL%%%Consider using a method that explicitly works relative to the liquid level.%%%RET%%%%%%NL%%%If the method works relative to the liquid level then review any ZOffset used.%%%RET%%%%%%NL%%%Moved tip position up to avoid going too deep into liquid. %%%RET%%%%%%NL%%%Consider using a method that explicitly works relative to the liquid level.%%%RET%%%%%%NL%%%If the method works relative to the liquid level then review any ZOffset used.%%%RET%%%%%%NL%%%Moved tip position up to avoid going too deep into liquid. %%%RET%%%%%%NL%%%Consider using a method that explicitly works relative to the liquid level.%%%RET%%%%%%NL%%%If the method works relative to the liquid level then review any ZOffset used.)
+2025-07-24T19:41:12.9923983,,Sample 2.00 mL to ph_check_a/A4
+2025-07-24T23:06:15.1012886,,Inoculated with 14.72 mL of Ao0252
+2025-07-25T20:42:13.1179048,,Sample 2.00 mL to ph_check_a/A4
+2025-07-28T17:46:45.3822778,,Sample 2.00 mL to ph_check_a/A4
+2025-07-28T21:09:41.4485301,,Sample 3.00 mL to ph_check_b/A4
+2025-07-29T19:06:49.6777044,,Sample 2.00 mL to ph_check_b/A4
+2025-07-30T18:36:59.4411266,,Sample 3.00 mL to ph_check_b/A4
+2025-07-31T17:48:05.7321514,,Sample 3.00 mL to Sample Day 7b/A4
+2025-07-31T18:15:40.2717031,,Sample 2.00 mL to Sample Day 7c/A4
