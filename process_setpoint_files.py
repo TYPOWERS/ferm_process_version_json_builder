@@ -118,13 +118,48 @@ class SetpointProcessor:
             traceback.print_exc()
             return df  # Return original data if processing fails
     
+    def extract_inoculation_time(self):
+        """Extract inoculation timestamp from Reference times file."""
+        if not self.data_folder:
+            return None
+            
+        # Look for Reference times file
+        pattern = os.path.join(self.data_folder, "*Reference*times*.csv")
+        reference_files = glob.glob(pattern)
+        
+        if not reference_files:
+            print("No Reference times file found")
+            return None
+            
+        try:
+            reference_file = reference_files[0]  # Use first match
+            print(f"Found Reference times file: {os.path.basename(reference_file)}")
+            
+            # Read the file and look for Inoculation timestamp
+            with open(reference_file, 'r') as f:
+                for line in f:
+                    if 'Inoculation' in line:
+                        # Extract timestamp from the line
+                        # Format: 2025-07-24T23:06:15.1012886,,Inoculation
+                        timestamp = line.split(',')[0]
+                        print(f"Found inoculation time: {timestamp}")
+                        return timestamp
+                        
+        except Exception as e:
+            print(f"Error reading Reference times file: {e}")
+            
+        return None
+
     def discover_files(self):
         """Find all _SP files and categorize them by parameter type."""
         if not self.data_folder:
-            return {'variable_sp': [], 'named_sp': []}
+            return {'variable_sp': [], 'named_sp': [], 'inoculation_time': None}
             
         pattern = os.path.join(self.data_folder, "*_SP*.csv")
         self.setpoint_files = glob.glob(pattern)
+        
+        # Extract inoculation time from Reference times file
+        inoculation_time = self.extract_inoculation_time()
         
         # Separate files into Variable SP (UUID-like) and Named SP groups
         variable_sp_files = []
@@ -171,7 +206,10 @@ class SetpointProcessor:
                     self.parameter_groups[param_name] = []
                 self.parameter_groups[param_name].append(file_path)
         
-        return self.grouped_files
+        # Add inoculation time to the return data
+        result = self.grouped_files.copy()
+        result['inoculation_time'] = inoculation_time
+        return result
     
     def read_setpoint_file(self, file_path: str) -> pd.DataFrame:
         """Read and parse a single setpoint CSV file."""
@@ -321,15 +359,109 @@ class SetpointProcessor:
         print(f"Loaded {len(combined_df)} data points from {len(set(combined_df['parameter']))} parameters")
         return combined_df
     
-    def create_plot(self, data: pd.DataFrame, title: str = "Setpoint Time Series") -> go.Figure:
-        """Create Plotly visualization of the setpoint data."""
+    def calculate_derivatives(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Calculate 1st and 2nd derivatives using Savitzky-Golay filtering for smoother results."""
+        import numpy as np
+        from scipy.interpolate import interp1d
+        from scipy.signal import savgol_filter
+        
+        result_data = []
+        
+        for param in data['parameter'].unique():
+            param_data = data[data['parameter'] == param].copy()
+            param_data = param_data.sort_values('timestamp').reset_index(drop=True)
+            
+            if len(param_data) < 10:  # Need minimum points for filtering
+                # Fall back to simple gradient for very small datasets
+                time_seconds = (param_data['timestamp'] - param_data['timestamp'].iloc[0]).dt.total_seconds().values
+                values = param_data['value'].values
+                param_data['first_derivative'] = np.gradient(values, time_seconds)
+                param_data['second_derivative'] = np.gradient(param_data['first_derivative'], time_seconds)
+                result_data.append(param_data)
+                continue
+                
+            # Convert timestamps to numeric (seconds from first timestamp)
+            time_irregular = (param_data['timestamp'] - param_data['timestamp'].iloc[0]).dt.total_seconds().values
+            values_irregular = param_data['value'].values
+            
+            # 1. Resample onto a regular grid
+            t_min, t_max = np.min(time_irregular), np.max(time_irregular)
+            dt_regular = 1.0  # 1 second intervals
+            t_regular = np.arange(t_min, t_max + dt_regular, dt_regular)
+            
+            # Skip if too few points after resampling
+            if len(t_regular) < 10:
+                time_seconds = time_irregular
+                values = values_irregular
+                param_data['first_derivative'] = np.gradient(values, time_seconds)
+                param_data['second_derivative'] = np.gradient(param_data['first_derivative'], time_seconds)
+                result_data.append(param_data)
+                continue
+            
+            # 2. Interpolate onto regular grid
+            try:
+                interp_function = interp1d(time_irregular, values_irregular, kind='linear', 
+                                         bounds_error=False, fill_value='extrapolate')
+                y_regular = interp_function(t_regular)
+                
+                # 3. Apply Savitzky-Golay Filter for derivatives
+                window_size = min(21, len(y_regular) // 3)  # Adaptive window size
+                if window_size % 2 == 0:  # Must be odd
+                    window_size += 1
+                if window_size < 5:  # Minimum window size
+                    window_size = 5
+                    
+                polyorder = min(3, window_size - 1)  # Polynomial order must be < window size
+                
+                # Calculate derivatives on regular grid
+                dy_dt_regular = savgol_filter(y_regular, window_size, polyorder, deriv=1) / dt_regular
+                d2y_dt2_regular = savgol_filter(y_regular, window_size, polyorder, deriv=2) / (dt_regular ** 2)
+                
+                # 4. Interpolate derivatives back to original irregular timestamps
+                interp_dy = interp1d(t_regular, dy_dt_regular, kind='linear', 
+                                   bounds_error=False, fill_value='extrapolate')
+                interp_d2y = interp1d(t_regular, d2y_dt2_regular, kind='linear', 
+                                    bounds_error=False, fill_value='extrapolate')
+                
+                first_derivative = interp_dy(time_irregular)
+                second_derivative = interp_d2y(time_irregular)
+                
+            except Exception as e:
+                print(f"Warning: Savgol filtering failed for {param}, falling back to gradient: {e}")
+                # Fall back to simple gradient
+                first_derivative = np.gradient(values_irregular, time_irregular)
+                second_derivative = np.gradient(first_derivative, time_irregular)
+            
+            # Add derivatives to the dataframe
+            param_data = param_data.copy()
+            param_data['first_derivative'] = first_derivative
+            param_data['second_derivative'] = second_derivative
+            
+            result_data.append(param_data)
+        
+        if result_data:
+            return pd.concat(result_data, ignore_index=True)
+        else:
+            return data
+
+    def create_plot(self, data: pd.DataFrame, title: str = "Setpoint Time Series", use_process_time: bool = False) -> go.Figure:
+        """Create Plotly visualization of the setpoint data with derivatives."""
         if data.empty:
             return go.Figure().add_annotation(text="No data to display", x=0.5, y=0.5)
         
-        fig = go.Figure()
+        # Calculate derivatives
+        data_with_derivatives = self.calculate_derivatives(data)
+        
+        # Create subplots: 3 rows (Original, 1st Derivative, 2nd Derivative)
+        fig = make_subplots(
+            rows=3, cols=1,
+            subplot_titles=('Setpoint Values', '1st Derivative (Rate of Change)', '2nd Derivative (Acceleration)'),
+            vertical_spacing=0.08,
+            shared_xaxes=True
+        )
         
         # Get unique parameters
-        parameters = data['parameter'].unique()
+        parameters = data_with_derivatives['parameter'].unique()
         
         # Create a color palette
         colors = px.colors.qualitative.Set3
@@ -337,35 +469,74 @@ class SetpointProcessor:
             colors = px.colors.qualitative.Plotly * (len(parameters) // len(px.colors.qualitative.Plotly) + 1)
         
         for i, param in enumerate(parameters):
-            param_data = data[data['parameter'] == param]
+            param_data = data_with_derivatives[data_with_derivatives['parameter'] == param]
+            color = colors[i % len(colors)]
             
             # Extract units from parameter name for hover text
             units = ""
             if "(" in param and ")" in param:
                 units = param[param.find("(")+1:param.find(")")]
             
+            # Choose x-axis data based on use_process_time
+            x_data = param_data['process_time_hours'] if use_process_time and 'process_time_hours' in param_data.columns else param_data['timestamp']
+            x_label = "Process Time (h)" if use_process_time and 'process_time_hours' in param_data.columns else "Time"
+            
+            # Original setpoint values (row 1)
             fig.add_trace(go.Scatter(
-                x=param_data['timestamp'],
+                x=x_data,
                 y=param_data['value'],
                 name=param,
                 mode='lines+markers',
-                line=dict(color=colors[i % len(colors)], width=2),
+                line=dict(color=color, width=2),
                 marker=dict(size=4),
                 hovertemplate=(
                     f"<b>{param}</b><br>" +
-                    "Time: %{x}<br>" +
+                    f"{x_label}: %{{x}}<br>" +
                     f"Value: %{{y}}" + (f" {units}" if units else "") +
                     "<extra></extra>"
-                )
-            ))
+                ),
+                showlegend=True
+            ), row=1, col=1)
+            
+            # 1st derivative (row 2)
+            if 'first_derivative' in param_data.columns:
+                fig.add_trace(go.Scatter(
+                    x=x_data,
+                    y=param_data['first_derivative'],
+                    name=f"{param} (1st)",
+                    mode='lines',
+                    line=dict(color=color, width=1, dash='dash'),
+                    hovertemplate=(
+                        f"<b>{param} - 1st Derivative</b><br>" +
+                        f"{x_label}: %{{x}}<br>" +
+                        f"Rate: %{{y}}" + (f" {units}/s" if units else " /s") +
+                        "<extra></extra>"
+                    ),
+                    showlegend=False
+                ), row=2, col=1)
+            
+            # 2nd derivative (row 3)
+            if 'second_derivative' in param_data.columns:
+                fig.add_trace(go.Scatter(
+                    x=x_data,
+                    y=param_data['second_derivative'],
+                    name=f"{param} (2nd)",
+                    mode='lines',
+                    line=dict(color=color, width=1, dash='dot'),
+                    hovertemplate=(
+                        f"<b>{param} - 2nd Derivative</b><br>" +
+                        f"{x_label}: %{{x}}<br>" +
+                        f"Acceleration: %{{y}}" + (f" {units}/s²" if units else " /s²") +
+                        "<extra></extra>"
+                    ),
+                    showlegend=False
+                ), row=3, col=1)
         
         # Update layout
         fig.update_layout(
             title=dict(text=title, x=0.5, font=dict(size=16)),
-            xaxis_title="Time",
-            yaxis_title="Setpoint Value",
             hovermode='closest',
-            height=800,
+            height=1200,  # Taller to accommodate 3 subplots
             showlegend=True,
             legend=dict(
                 orientation="v",
@@ -378,16 +549,19 @@ class SetpointProcessor:
         )
         
         # Update axes
+        x_axis_title = "Process Time (hours)" if use_process_time else "Time"
         fig.update_xaxes(
             showgrid=True,
             gridwidth=1,
-            gridcolor='lightgray'
+            gridcolor='lightgray',
+            row=3, col=1,
+            title=x_axis_title
         )
-        fig.update_yaxes(
-            showgrid=True,
-            gridwidth=1,
-            gridcolor='lightgray'
-        )
+        
+        # Update y-axes with appropriate titles
+        fig.update_yaxes(title="Setpoint Value", row=1, col=1, showgrid=True, gridwidth=1, gridcolor='lightgray')
+        fig.update_yaxes(title="Rate of Change", row=2, col=1, showgrid=True, gridwidth=1, gridcolor='lightgray')
+        fig.update_yaxes(title="Acceleration", row=3, col=1, showgrid=True, gridwidth=1, gridcolor='lightgray')
         
         return fig
     
@@ -848,10 +1022,12 @@ def update_graph_button(selected_files):
 @app.callback(
     Output("graph-container", "children"),
     [Input("graph-btn", "n_clicks")],
-    [State("selected-files", "data")],
+    [State("selected-files", "data"),
+     State("inoculation-time", "data"),
+     State("show-negative-time", "data")],
     prevent_initial_call=True
 )
-def create_graph(n_clicks, selected_files):
+def create_graph(n_clicks, selected_files, inoculation_time, show_negative_time):
     if not n_clicks or not selected_files:
         return html.Div()
     
@@ -878,10 +1054,32 @@ def create_graph(n_clicks, selected_files):
     combined_df = pd.concat(all_data, ignore_index=True)
     combined_df = combined_df.sort_values(['parameter', 'timestamp'])
     
+    # Apply time offset based on toggle and inoculation time
+    if inoculation_time:
+        try:
+            from datetime import datetime
+            inoculation_dt = datetime.fromisoformat(inoculation_time.replace('Z', '+00:00'))
+            
+            # Convert timestamps to process time hours
+            combined_df['process_time_hours'] = (combined_df['timestamp'] - inoculation_dt).dt.total_seconds() / 3600
+            
+            # Filter data based on toggle setting
+            if not show_negative_time:
+                # Only show data from inoculation time onwards (>= 0)
+                combined_df = combined_df[combined_df['process_time_hours'] >= 0].copy()
+            
+            print(f"Applied time offset: {len(combined_df)} data points after filtering (show_negative: {show_negative_time})")
+        except Exception as e:
+            print(f"Error applying time offset: {e}")
+            # Fall back to original timestamps
+            combined_df['process_time_hours'] = None
+    else:
+        combined_df['process_time_hours'] = None
+    
     print(f"Creating plot with {len(combined_df)} data points")
-    # Create plot
+    # Create plot with time offset consideration
     title = f"Setpoint Data ({len(selected_files)} files selected)"
-    fig = processor.create_plot(combined_df, title)
+    fig = processor.create_plot(combined_df, title, use_process_time=bool(inoculation_time))
     
     print("Graph creation complete")
     return dbc.Card([
@@ -893,7 +1091,7 @@ def create_graph(n_clicks, selected_files):
 
 
 def main():
-    # Create temp directory if it doesn't exist
+    # Create temporary directory if it doesn't exist
     import tempfile
     os.makedirs('/tmp', exist_ok=True)
     

@@ -220,7 +220,7 @@ app.layout = html.Div([
                     )
                 ], style={"display": "inline-block", "verticalAlign": "top", "marginTop": "10px"})
             ]),
-            dcc.Graph(id="temp-graph")
+            dcc.Graph(id="profile-graph")
         ], className="col-12")
     ], className="row"),
 
@@ -695,7 +695,7 @@ def handle_drag_reorder(drag_data, comps):
     return comps
 
 @app.callback(
-    Output("temp-graph", "figure"),
+    Output("profile-graph", "figure"),
     [Input("components-store", "data"),
      Input("process-type", "value"),
      Input("x-axis-toggle", "value")],
