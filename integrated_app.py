@@ -814,7 +814,7 @@ def generate_profile_timeline(components):
             y_points += [comp["setpoint"], comp["setpoint"]]
         elif comp["type"] == "ramp":
             t_points += [current_time, current_time + dur]
-            y_points += [comp["start_temp"], comp["end_temp"]]
+            y_points += [comp["start_setpoint"], comp["end_setpoint"]]
         elif comp["type"] == "pwm":
             cycles = max(10, dur // 5)
             cycle_time = dur / cycles

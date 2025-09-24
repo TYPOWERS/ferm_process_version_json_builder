@@ -11,11 +11,126 @@ import json
 import uuid
 import dash_bootstrap_components as dbc
 
+# Process units mapping
+PROCESS_UNITS = {
+    "Agitation": "rpm",
+    "pH": "",
+    "Acid": "mL/hr",
+    "Base": "mL/hr",
+    "Media A": "mL/hr",
+    "Temperature": "°C"
+}
+
 
 class ProfileBuilder:
     def __init__(self, app):
         self.app = app
         self.setup_callbacks()
+
+    def get_process_unit(self, process_type):
+        """Get unit for a given process type"""
+        return PROCESS_UNITS.get(process_type, "")
+
+    def calculate_component_timing(self, components):
+        """Calculate start_time and end_time for each component"""
+        current_time = 0
+        updated_components = []
+
+        for i, comp in enumerate(components):
+            updated_comp = comp.copy()
+            updated_comp['index'] = i
+            updated_comp['start_time'] = round(current_time, 2)
+            current_time += comp.get('duration', 0)
+            updated_comp['end_time'] = round(current_time, 2)
+            updated_components.append(updated_comp)
+
+        return updated_components
+
+    def generate_profile_metadata(self, components, process_type):
+        """Generate metadata for the profile"""
+        if not components:
+            return {}
+
+        # Calculate totals
+        total_components = len(components)
+        total_duration = sum(comp.get('duration', 0) for comp in components)
+
+        # Get component types
+        component_types = list(set(comp['type'] for comp in components))
+
+        # Calculate value ranges - ignore 0 from first component
+        value_range = {"min": None, "max": None}
+
+        for comp_index, comp in enumerate(components):
+            values = []
+            comp_type = comp['type']
+
+            if comp_type == 'constant':
+                setpoint = comp.get('setpoint')
+                if setpoint is not None:
+                    # Skip 0 values from first component for min calculation
+                    if comp_index == 0 and setpoint == 0:
+                        # Only add to max, not min
+                        if value_range["max"] is None or setpoint > value_range["max"]:
+                            value_range["max"] = setpoint
+                    else:
+                        values.append(setpoint)
+            elif comp_type == 'ramp':
+                start_setpoint = comp.get('start_setpoint')
+                end_setpoint = comp.get('end_setpoint')
+                if start_setpoint is not None:
+                    # Skip 0 values from first component for min calculation
+                    if comp_index == 0 and start_setpoint == 0:
+                        if value_range["max"] is None or start_setpoint > value_range["max"]:
+                            value_range["max"] = start_setpoint
+                    else:
+                        values.append(start_setpoint)
+                if end_setpoint is not None:
+                    values.append(end_setpoint)
+            elif comp_type == 'pwm':
+                high_temp = comp.get('high_temp')
+                low_temp = comp.get('low_temp')
+                if high_temp is not None:
+                    values.append(high_temp)
+                if low_temp is not None:
+                    # Skip 0 values from first component for min calculation
+                    if comp_index == 0 and low_temp == 0:
+                        if value_range["max"] is None or low_temp > value_range["max"]:
+                            value_range["max"] = low_temp
+                    else:
+                        values.append(low_temp)
+            elif comp_type == 'pid':
+                setpoint = comp.get('setpoint')
+                min_allowed = comp.get('min_allowed')
+                max_allowed = comp.get('max_allowed')
+                if setpoint is not None:
+                    # Skip 0 values from first component for min calculation
+                    if comp_index == 0 and setpoint == 0:
+                        if value_range["max"] is None or setpoint > value_range["max"]:
+                            value_range["max"] = setpoint
+                    else:
+                        values.append(setpoint)
+                if min_allowed is not None:
+                    values.append(min_allowed)
+                if max_allowed is not None:
+                    values.append(max_allowed)
+
+            # Update value range
+            for value in values:
+                if value is not None:
+                    if value_range["min"] is None or value < value_range["min"]:
+                        value_range["min"] = value
+                    if value_range["max"] is None or value > value_range["max"]:
+                        value_range["max"] = value
+
+        return {
+            "parameter": process_type,
+            "unit": self.get_process_unit(process_type),
+            "total_components": total_components,
+            "total_duration": total_duration,
+            "component_types": component_types,
+            "value_range": value_range
+        }
     
     def get_layout(self):
         """Return the profile builder layout"""
@@ -32,12 +147,12 @@ class ProfileBuilder:
                                     dcc.Dropdown(
                                         id="process-type",
                                         options=[
-                                            {"label": "Agitation", "value": "Agitation"},
-                                            {"label": "pH", "value": "pH"},
-                                            {"label": "Acid", "value": "Acid"},
-                                            {"label": "Base", "value": "Base"},
-                                            {"label": "Media A", "value": "Media A"},
-                                            {"label": "Temperature", "value": "Temperature"}
+                                            {"label": f"Agitation ({PROCESS_UNITS['Agitation']})", "value": "Agitation"},
+                                            {"label": f"pH ({PROCESS_UNITS['pH']})", "value": "pH"},
+                                            {"label": f"Acid ({PROCESS_UNITS['Acid']})", "value": "Acid"},
+                                            {"label": f"Base ({PROCESS_UNITS['Base']})", "value": "Base"},
+                                            {"label": f"Media A ({PROCESS_UNITS['Media A']})", "value": "Media A"},
+                                            {"label": f"Temperature ({PROCESS_UNITS['Temperature']})", "value": "Temperature"}
                                         ],
                                         placeholder="Select process type"
                                     )
@@ -226,36 +341,41 @@ class ProfileBuilder:
         @self.app.callback(
             [Output("dynamic-fields", "children"),
              Output("add-btn", "disabled")],
-            [Input("component-type", "value")]
+            [Input("component-type", "value")],
+            [State("process-type", "value")]
         )
-        def update_dynamic_fields(component_type):
+        def update_dynamic_fields(component_type, process_type):
             if not component_type:
                 return [], True
 
+            # Get unit for current process type
+            unit = self.get_process_unit(process_type) if process_type else ""
+            unit_suffix = f" ({unit})" if unit else ""
+
             fields = []
-            
+
             if component_type == "constant":
                 fields = [
-                    html.Label("Setpoint:"),
-                    dbc.Input(id={"type": "dynamic-input", "id": "setpoint"}, type="number", placeholder="Enter setpoint value", className="mb-2"),
+                    html.Label(f"Setpoint{unit_suffix}:"),
+                    dbc.Input(id={"type": "dynamic-input", "id": "setpoint"}, type="number", placeholder=f"Enter setpoint value{unit_suffix}", className="mb-2"),
                     html.Label("Duration (hours):"),
                     dbc.Input(id={"type": "dynamic-input", "id": "duration"}, type="number", placeholder="Enter duration in hours", className="mb-2")
                 ]
             elif component_type == "ramp":
                 fields = [
-                    html.Label("Start Value:"),
-                    dbc.Input(id={"type": "dynamic-input", "id": "start-value"}, type="number", placeholder="Enter start value", className="mb-2"),
-                    html.Label("End Value:"),
-                    dbc.Input(id={"type": "dynamic-input", "id": "end-value"}, type="number", placeholder="Enter end value", className="mb-2"),
+                    html.Label(f"Start Value{unit_suffix}:"),
+                    dbc.Input(id={"type": "dynamic-input", "id": "start-value"}, type="number", placeholder=f"Enter start value{unit_suffix}", className="mb-2"),
+                    html.Label(f"End Value{unit_suffix}:"),
+                    dbc.Input(id={"type": "dynamic-input", "id": "end-value"}, type="number", placeholder=f"Enter end value{unit_suffix}", className="mb-2"),
                     html.Label("Duration (hours):"),
                     dbc.Input(id={"type": "dynamic-input", "id": "duration"}, type="number", placeholder="Enter duration in hours", className="mb-2")
                 ]
             elif component_type == "pwm":
                 fields = [
-                    html.Label("High Value:"),
-                    dbc.Input(id={"type": "dynamic-input", "id": "high-value"}, type="number", placeholder="Enter high value", className="mb-2"),
-                    html.Label("Low Value:"),
-                    dbc.Input(id={"type": "dynamic-input", "id": "low-value"}, type="number", placeholder="Enter low value", className="mb-2"),
+                    html.Label(f"High Value{unit_suffix}:"),
+                    dbc.Input(id={"type": "dynamic-input", "id": "high-value"}, type="number", placeholder=f"Enter high value{unit_suffix}", className="mb-2"),
+                    html.Label(f"Low Value{unit_suffix}:"),
+                    dbc.Input(id={"type": "dynamic-input", "id": "low-value"}, type="number", placeholder=f"Enter low value{unit_suffix}", className="mb-2"),
                     html.Label("Pulse Percentage:"),
                     dbc.Input(id={"type": "dynamic-input", "id": "pulse-percent"}, type="number", placeholder="Enter pulse percentage", className="mb-2"),
                     html.Label("Duration (hours):"),
@@ -265,12 +385,12 @@ class ProfileBuilder:
                 fields = [
                     html.Label("Controller Name:"),
                     dbc.Input(id={"type": "dynamic-input", "id": "controller-name"}, type="text", placeholder="Enter controller name", className="mb-2"),
-                    html.Label("Setpoint:"),
-                    dbc.Input(id={"type": "dynamic-input", "id": "setpoint"}, type="number", placeholder="Enter setpoint value", className="mb-2"),
-                    html.Label("Min Allowed:"),
-                    dbc.Input(id={"type": "dynamic-input", "id": "min-allowed"}, type="number", placeholder="Enter minimum allowed value", className="mb-2"),
-                    html.Label("Max Allowed:"),
-                    dbc.Input(id={"type": "dynamic-input", "id": "max-allowed"}, type="number", placeholder="Enter maximum allowed value", className="mb-2"),
+                    html.Label(f"Setpoint{unit_suffix}:"),
+                    dbc.Input(id={"type": "dynamic-input", "id": "setpoint"}, type="number", placeholder=f"Enter setpoint value{unit_suffix}", className="mb-2"),
+                    html.Label(f"Min Allowed{unit_suffix}:"),
+                    dbc.Input(id={"type": "dynamic-input", "id": "min-allowed"}, type="number", placeholder=f"Enter minimum allowed value{unit_suffix}", className="mb-2"),
+                    html.Label(f"Max Allowed{unit_suffix}:"),
+                    dbc.Input(id={"type": "dynamic-input", "id": "max-allowed"}, type="number", placeholder=f"Enter maximum allowed value{unit_suffix}", className="mb-2"),
                     html.Label("Duration (hours):"),
                     dbc.Input(id={"type": "dynamic-input", "id": "duration"}, type="number", placeholder="Enter duration in hours", className="mb-2")
                 ]
@@ -285,11 +405,12 @@ class ProfileBuilder:
             [Input("add-btn", "n_clicks")],
             [State("component-type", "value"),
              State("profile-components", "data"),
+             State("process-type", "value"),
              State({"type": "dynamic-input", "id": ALL}, "value"),
              State({"type": "dynamic-input", "id": ALL}, "id")],
             prevent_initial_call=True
         )
-        def create_new_component(add_clicks, component_type, components, input_values, input_ids):
+        def create_new_component(add_clicks, component_type, components, process_type, input_values, input_ids):
             if not add_clicks or not component_type:
                 return dash.no_update, dash.no_update, dash.no_update
 
@@ -313,8 +434,8 @@ class ProfileBuilder:
                 })
             elif component_type == "ramp":
                 component.update({
-                    "start_temp": field_values.get("start-value"),
-                    "end_temp": field_values.get("end-value"),
+                    "start_setpoint": field_values.get("start-value"),
+                    "end_setpoint": field_values.get("end-value"),
                     "duration": field_values.get("duration")
                 })
             elif component_type == "pwm":
@@ -335,11 +456,11 @@ class ProfileBuilder:
             
             print(f"📝 Created new component: {component}")
             components.append(component)
-            
+
             # Create visual component list
-            component_elements = self._create_component_elements(components)
+            component_elements = self._create_component_elements(components, process_type)
             count_text = f"{len(components)} components"
-            
+
             return components, component_elements, count_text
 
         # Update existing component callback
@@ -353,12 +474,13 @@ class ProfileBuilder:
             [Input("update-btn", "n_clicks")],
             [State("component-type", "value"),
              State("profile-components", "data"),
+             State("process-type", "value"),
              State("selected-component", "data"),
              State({"type": "dynamic-input", "id": ALL}, "value"),
              State({"type": "dynamic-input", "id": ALL}, "id")],
             prevent_initial_call=True
         )
-        def update_existing_component(update_clicks, component_type, components, selected_component_id, input_values, input_ids):
+        def update_existing_component(update_clicks, component_type, components, process_type, selected_component_id, input_values, input_ids):
             if not update_clicks or not component_type or not selected_component_id:
                 return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
@@ -392,18 +514,18 @@ class ProfileBuilder:
                             "duration": float(duration) if duration is not None and duration != "" else None
                         })
                     elif component_type == "ramp":
-                        start_temp = field_values.get("start-value")
-                        end_temp = field_values.get("end-value") 
+                        start_setpoint = field_values.get("start-value")
+                        end_setpoint = field_values.get("end-value")
                         duration = field_values.get("duration")
-                        
-                        print(f"📝 Ramp field values: start_temp={start_temp}, end_temp={end_temp}, duration={duration}")
-                        
+
+                        print(f"📝 Ramp field values: start_setpoint={start_setpoint}, end_setpoint={end_setpoint}, duration={duration}")
+
                         try:
-                            start_val = float(start_temp) if start_temp is not None and start_temp != "" else None
-                            end_val = float(end_temp) if end_temp is not None and end_temp != "" else None
+                            start_val = float(start_setpoint) if start_setpoint is not None and start_setpoint != "" else None
+                            end_val = float(end_setpoint) if end_setpoint is not None and end_setpoint != "" else None
                             duration_val = float(duration) if duration is not None and duration != "" else None
-                            
-                            # Check if start and end temps are the same (within tolerance)
+
+                            # Check if start and end setpoints are the same (within tolerance)
                             if start_val is not None and end_val is not None:
                                 if abs(start_val - end_val) < 0.1:  # Same value (within 0.1 tolerance)
                                     print(f"📝 Converting ramp to constant: {start_val} == {end_val}")
@@ -413,29 +535,29 @@ class ProfileBuilder:
                                         "duration": duration_val
                                     })
                                     # Remove ramp-specific fields
-                                    updated_component.pop("start_temp", None)
-                                    updated_component.pop("end_temp", None)
+                                    updated_component.pop("start_setpoint", None)
+                                    updated_component.pop("end_setpoint", None)
                                 else:
                                     print(f"📝 Keeping as ramp: {start_val} → {end_val}")
                                     updated_component.update({
                                         "type": "ramp",
-                                        "start_temp": start_val,
-                                        "end_temp": end_val,
+                                        "start_setpoint": start_val,
+                                        "end_setpoint": end_val,
                                         "duration": duration_val
                                     })
                             else:
                                 # Missing values, keep as entered
                                 updated_component.update({
-                                    "start_temp": start_val,
-                                    "end_temp": end_val,
+                                    "start_setpoint": start_val,
+                                    "end_setpoint": end_val,
                                     "duration": duration_val
                                 })
                         except (ValueError, TypeError) as e:
                             print(f"❌ Error converting ramp values: {e}")
                             # Keep original values if conversion fails
                             updated_component.update({
-                                "start_temp": start_temp,
-                                "end_temp": end_temp,
+                                "start_setpoint": start_setpoint,
+                                "end_setpoint": end_setpoint,
                                 "duration": duration
                             })
                     elif component_type == "pwm":
@@ -460,13 +582,13 @@ class ProfileBuilder:
                     updated_components.append(comp)
             
             # Update display
-            component_elements = self._create_component_elements(updated_components)
+            component_elements = self._create_component_elements(updated_components, process_type)
             count_text = f"{len(updated_components)} components"
-            
+
             # Reset to create mode
             add_style = {"display": "block"}
             update_style = {"display": "none"}
-            
+
             return updated_components, component_elements, count_text, add_style, update_style, ""
         
         # Clear all callback
@@ -502,16 +624,25 @@ class ProfileBuilder:
             if not n_clicks or not components:
                 return html.P("No components to export", style={"color": "red"})
 
-            # Create dynamic key based on process type
-            if process_type:
-                key = f"{process_type.lower()}_profile"
-            else:
-                key = "profile"
+            if not process_type:
+                return html.P("Please select a process type before exporting", style={"color": "red"})
+
+            # Calculate timing for components
+            timed_components = self.calculate_component_timing(components)
 
             # Remove internal 'id' field from components
-            clean_components = [{k: v for k, v in comp.items() if k != "id"} for comp in components]
+            clean_components = [{k: v for k, v in comp.items() if k != "id"} for comp in timed_components]
 
-            return html.Pre(json.dumps({key: clean_components}, indent=2), style={
+            # Generate metadata
+            metadata = self.generate_profile_metadata(components, process_type)
+
+            # Create enhanced JSON structure
+            enhanced_json = {
+                "profile": clean_components,
+                "summary": metadata
+            }
+
+            return html.Pre(json.dumps(enhanced_json, indent=2), style={
                 "backgroundColor": "#f8f9fa",
                 "padding": "10px",
                 "border": "1px solid #dee2e6",
@@ -526,13 +657,14 @@ class ProfileBuilder:
             [Output("component-list", "children", allow_duplicate=True),
              Output("component-count-badge", "children", allow_duplicate=True)],
             [Input("profile-components", "data")],
+            [State("process-type", "value")],
             prevent_initial_call=True
         )
-        def update_component_list_display(components):
+        def update_component_list_display(components, process_type):
             if not components:
                 return [html.P("Add components to build your profile", className="text-muted text-center")], "0 components"
-            
-            component_elements = self._create_component_elements(components)
+
+            component_elements = self._create_component_elements(components, process_type)
             count_text = f"{len(components)} components"
             return component_elements, count_text
         
@@ -649,9 +781,9 @@ class ProfileBuilder:
                 elif field_name == 'duration':
                     value = component_to_edit.get('duration', "")
                 elif field_name == 'start-value':
-                    value = component_to_edit.get('start_temp', "")
+                    value = component_to_edit.get('start_setpoint', "")
                 elif field_name == 'end-value':
-                    value = component_to_edit.get('end_temp', "")
+                    value = component_to_edit.get('end_setpoint', "")
                 elif field_name == 'high-value':
                     value = component_to_edit.get('high_temp', "")
                 elif field_name == 'low-value':
@@ -743,58 +875,69 @@ class ProfileBuilder:
             return components
         
     
-    def _create_component_elements(self, components):
+    def _create_component_elements(self, components, process_type=None):
         """Create visual elements for component list"""
         if not components:
             return [html.P("Add components to build your profile", className="text-muted text-center")]
-        
+
         elements = []
         for i, component in enumerate(components):
             # Create component card
             card = dbc.Card([
                 dbc.CardBody([
                     html.H6(f"{component['type'].title()} Component", className="card-title"),
-                    html.P(self._format_component_details(component), className="card-text"),
+                    html.P(self._format_component_details(component, process_type), className="card-text"),
                     dbc.Row([
                         dbc.Col([
-                            dbc.Button("Edit", 
-                                id={"type": "edit-component-btn", "index": component.get('id', i)}, 
+                            dbc.Button("Edit",
+                                id={"type": "edit-component-btn", "index": component.get('id', i)},
                                 color="warning", size="md", className="w-100")
                         ], width=6),
                         dbc.Col([
-                            dbc.Button("Delete", 
-                                id={"type": "delete-component-btn", "index": component.get('id', i)}, 
+                            dbc.Button("Delete",
+                                id={"type": "delete-component-btn", "index": component.get('id', i)},
                                 color="danger", size="md", className="w-100")
                         ], width=6)
                     ], className="g-2")
                 ])
             ], className="component-block mb-2", style={"cursor": "grab"})
-            
+
             elements.append(card)
-        
+
         return elements
     
-    def _format_component_details(self, component):
-        """Format component details for display"""
+    def _format_component_details(self, component, process_type=None):
+        """Format component details for display with units"""
         comp_type = component['type']
-        
+        unit = self.get_process_unit(process_type) if process_type else ""
+
+        # Format duration
+        duration = component.get('duration', 0)
+        duration_str = f"{duration/24:.1f}d" if duration >= 24 else f"{duration:.1f}h"
+
         if comp_type == "constant":
-            duration = component.get('duration', 0)
-            duration_str = f"{duration/24:.1f}d" if duration >= 24 else f"{duration:.1f}h"
-            return f"Setpoint: {component.get('setpoint', 'N/A')}, Duration: {duration_str}"
+            setpoint = component.get('setpoint', 'N/A')
+            setpoint_str = f"{setpoint} {unit}" if unit and setpoint != 'N/A' else str(setpoint)
+            return f"Setpoint: {setpoint_str}, Duration: {duration_str}"
         elif comp_type == "ramp":
-            duration = component.get('duration', 0) 
-            duration_str = f"{duration/24:.1f}d" if duration >= 24 else f"{duration:.1f}h"
-            return f"From {component.get('start_temp', 'N/A')} to {component.get('end_temp', 'N/A')}, Duration: {duration_str}"
+            start_setpoint = component.get('start_setpoint', 'N/A')
+            end_setpoint = component.get('end_setpoint', 'N/A')
+            start_str = f"{start_setpoint} {unit}" if unit and start_setpoint != 'N/A' else str(start_setpoint)
+            end_str = f"{end_setpoint} {unit}" if unit and end_setpoint != 'N/A' else str(end_setpoint)
+            return f"From {start_str} to {end_str}, Duration: {duration_str}"
         elif comp_type == "pwm":
-            duration = component.get('duration', 0)
-            duration_str = f"{duration/24:.1f}d" if duration >= 24 else f"{duration:.1f}h"
-            return f"High: {component.get('high_temp', 'N/A')}, Low: {component.get('low_temp', 'N/A')}, Pulse: {component.get('pulse_percent', 'N/A')}%, Duration: {duration_str}"
+            high_temp = component.get('high_temp', 'N/A')
+            low_temp = component.get('low_temp', 'N/A')
+            high_str = f"{high_temp} {unit}" if unit and high_temp != 'N/A' else str(high_temp)
+            low_str = f"{low_temp} {unit}" if unit and low_temp != 'N/A' else str(low_temp)
+            pulse_percent = component.get('pulse_percent', 'N/A')
+            return f"High: {high_str}, Low: {low_str}, Pulse: {pulse_percent}%, Duration: {duration_str}"
         elif comp_type == "pid":
-            duration = component.get('duration', 0)
-            duration_str = f"{duration/24:.1f}d" if duration >= 24 else f"{duration:.1f}h"
-            return f"Controller: {component.get('controller', 'N/A')}, Setpoint: {component.get('setpoint', 'N/A')}, Duration: {duration_str}"
-        
+            controller = component.get('controller', 'N/A')
+            setpoint = component.get('setpoint', 'N/A')
+            setpoint_str = f"{setpoint} {unit}" if unit and setpoint != 'N/A' else str(setpoint)
+            return f"Controller: {controller}, Setpoint: {setpoint_str}, Duration: {duration_str}"
+
         return "Component details"
     
     def _create_generated_component_card(self, component):

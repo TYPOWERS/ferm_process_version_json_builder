@@ -156,7 +156,6 @@ class ComponentBuilder:
                 'type': 'constant',
                 'setpoint': 0.0,
                 'duration': round(first_time, 2),
-                'parameter': parameter_name,
                 'start_time': 0.0,
                 'end_time': round(first_time, 2),
                 'confidence': 'high',
@@ -185,7 +184,6 @@ class ComponentBuilder:
                     'type': 'constant',
                     'setpoint': self._round_to_sig_figs(v1),
                     'duration': round(t2 - t1, 2),
-                    'parameter': parameter_name,
                     'start_time': round(t1, 2),
                     'end_time': round(t2, 2),
                     'confidence': 'high',
@@ -218,7 +216,6 @@ class ComponentBuilder:
                     'type': 'constant',
                     'setpoint': self._round_to_sig_figs(v1),
                     'duration': round(t2 - t1, 2),
-                    'parameter': parameter_name,
                     'start_time': round(t1, 2),
                     'end_time': round(t2, 2),
                     'confidence': 'high',
@@ -236,7 +233,6 @@ class ComponentBuilder:
                     'type': 'constant',
                     'setpoint': self._round_to_sig_figs(v2),  # Use v2 since that's the sustained value
                     'duration': round(t3 - t2, 2),
-                    'parameter': parameter_name,
                     'start_time': round(t2, 2),
                     'end_time': round(t3, 2),
                     'confidence': 'high',
@@ -285,17 +281,16 @@ class ComponentBuilder:
                 
                 component = {
                     'type': 'ramp',
-                    'start_temp': self._round_to_sig_figs(start_value),
-                    'end_temp': self._round_to_sig_figs(end_value),
+                    'start_setpoint': self._round_to_sig_figs(start_value),
+                    'end_setpoint': self._round_to_sig_figs(end_value),
                     'duration': round(end_time - start_time, 2),
-                    'parameter': parameter_name,
                     'start_time': round(start_time, 2),
                     'end_time': round(end_time, 2),
                     'confidence': 'high',
                     'data_points': ramp_end_idx - ramp_start_idx + 1
                 }
                 components.append(component)
-                print(f"  → Added ramp component: {component['start_temp']}→{component['end_temp']} for {component['duration']}h")
+                print(f"  → Added ramp component: {component['start_setpoint']}→{component['end_setpoint']} for {component['duration']}h")
                 print(f"  → Setting next index to {ramp_end_idx} (overlapping to catch next constant)")
                 i = ramp_end_idx  # Set to ramp end point to allow overlap detection
                 
@@ -318,7 +313,6 @@ class ComponentBuilder:
                 'type': 'constant',
                 'setpoint': 0.0,
                 'duration': round(first_time, 2),
-                'parameter': parameter_name,
                 'start_time': 0.0,
                 'end_time': round(first_time, 2),
                 'confidence': 'high',
@@ -346,7 +340,6 @@ class ComponentBuilder:
                 'type': 'constant',
                 'setpoint': self._round_to_sig_figs(float(value)),
                 'duration': round(duration, 2),
-                'parameter': parameter_name,
                 'start_time': round(start_time, 2),
                 'end_time': round(end_time, 2),
                 'confidence': 'high',
@@ -369,7 +362,6 @@ class ComponentBuilder:
                     'type': 'constant',
                     'setpoint': self._round_to_sig_figs(float(avg_value)),
                     'duration': round(duration, 2),
-                    'parameter': parameter_name,
                     'start_time': round(start_time, 2),
                     'end_time': round(end_time, 2),
                     'confidence': 'high',
@@ -389,7 +381,6 @@ class ComponentBuilder:
                         'type': 'constant',
                         'setpoint': self._round_to_sig_figs(float(value)),
                         'duration': round(duration, 2),
-                        'parameter': parameter_name,
                         'start_time': round(start_time, 2),
                         'end_time': round(end_time, 2),
                         'confidence': 'high',
@@ -471,7 +462,6 @@ class ComponentBuilder:
             'type': 'constant',
             'setpoint': rounded_value,
             'duration': rounded_duration,
-            'parameter': parameter_name,
             'start_time': round(start_time, 2),
             'end_time': round(end_time, 2),
             'confidence': 'high',
@@ -550,10 +540,9 @@ class ComponentBuilder:
                         
                         component = {
                             'type': 'ramp',
-                            'start_temp': rounded_start,
-                            'end_temp': rounded_end,
+                            'start_setpoint': rounded_start,
+                            'end_setpoint': rounded_end,
                             'duration': duration,
-                            'parameter': parameter_name,
                             'start_time': round(start_time_h, 2),
                             'end_time': round(end_time_h, 2),
                             'confidence': 'high',
@@ -647,10 +636,9 @@ class ComponentBuilder:
 
         component = {
             "type": "ramp",
-            "start_temp": self._round_to_sig_figs(start_value),
-            "end_temp": self._round_to_sig_figs(end_value),
+            "start_setpoint": self._round_to_sig_figs(start_value),
+            "end_setpoint": self._round_to_sig_figs(end_value),
             "duration": duration,
-            "parameter": parameter_name,
             "start_time": round(start_time, 2),
             "end_time": round(end_time, 2),
             "confidence": confidence,
@@ -697,8 +685,8 @@ class ComponentBuilder:
     def _try_merge_components(self, comp1: Dict, comp2: Dict) -> Dict:
         """Try to merge two adjacent components if they're similar"""
         
-        # Must be same type and parameter
-        if comp1['type'] != comp2['type'] or comp1['parameter'] != comp2['parameter']:
+        # Must be same type
+        if comp1['type'] != comp2['type']:
             return None
         
         # Check if they're actually adjacent (small time gap allowed for constants only)
@@ -713,7 +701,6 @@ class ComponentBuilder:
                     'type': 'constant',
                     'setpoint': comp1['setpoint'],
                     'duration': comp1['duration'] + comp2['duration'],
-                    'parameter': comp1['parameter'],
                     'start_time': comp1['start_time'],
                     'end_time': comp2['end_time'],
                     'confidence': 'high',
@@ -723,8 +710,8 @@ class ComponentBuilder:
         
         elif comp1['type'] == 'ramp':
             # Use angle difference between ramp directions (much better approach)
-            slope1 = (comp1['end_temp'] - comp1['start_temp']) / comp1['duration']  # per hour
-            slope2 = (comp2['end_temp'] - comp2['start_temp']) / comp2['duration']  # per hour
+            slope1 = (comp1['end_setpoint'] - comp1['start_setpoint']) / comp1['duration']  # per hour
+            slope2 = (comp2['end_setpoint'] - comp2['start_setpoint']) / comp2['duration']  # per hour
             
             # Calculate angles of the slopes (in radians)
             angle1 = np.arctan(slope1)
@@ -745,10 +732,9 @@ class ComponentBuilder:
             if angle_tolerance_met:
                 return {
                     'type': 'ramp',
-                    'start_temp': comp1['start_temp'],
-                    'end_temp': comp2['end_temp'],
+                    'start_setpoint': comp1['start_setpoint'],
+                    'end_setpoint': comp2['end_setpoint'],
                     'duration': comp1['duration'] + comp2['duration'],
-                    'parameter': comp1['parameter'],
                     'start_time': comp1['start_time'],
                     'end_time': comp2['end_time'],
                     'confidence': 'high',
@@ -779,7 +765,7 @@ class ComponentBuilder:
                 while (j < len(components) and 
                        components[j]['type'] == 'constant' and
                        components[j]['duration'] <= 1 and
-                       components[j]['parameter'] == components[i]['parameter']):
+                       True):
                     
                     total_duration += components[j]['duration']
                     values.append(components[j]['setpoint'])
@@ -798,7 +784,6 @@ class ComponentBuilder:
                         'min_allowed': min_val,
                         'max_allowed': max_val,
                         'duration': round(total_duration, 1),  # Round to 0.1 hour precision
-                        'parameter': components[i]['parameter'],
                         'start_time': components[i]['start_time'],
                         'end_time': components[j-1]['end_time'],
                         'confidence': 'medium',
@@ -908,13 +893,13 @@ class ComponentBuilder:
 
                     # Handle ramp interpolation
                     if comp['type'] == 'ramp':
-                        start_temp = comp['start_temp']
-                        end_temp = comp['end_temp']
+                        start_setpoint = comp['start_setpoint']
+                        end_setpoint = comp['end_setpoint']
                         # Calculate interpolated end temperature based on progress
                         progress = remaining_time / comp_duration if comp_duration > 0 else 0
-                        interpolated_end_temp = start_temp + (end_temp - start_temp) * progress
-                        truncated_comp['end_temp'] = self._round_to_sig_figs(interpolated_end_temp)
-                        print(f"    → Ramp interpolation: {start_temp} → {interpolated_end_temp:.3f} (progress: {progress:.2%})")
+                        interpolated_end_setpoint = start_setpoint + (end_setpoint - start_setpoint) * progress
+                        truncated_comp['end_setpoint'] = self._round_to_sig_figs(interpolated_end_setpoint)
+                        print(f"    → Ramp interpolation: {start_setpoint} → {interpolated_end_setpoint:.3f} (progress: {progress:.2%})")
 
                     # Round to 5-minute precision for final duration
                     truncated_comp['duration'] = round(remaining_time / (5/60)) * (5/60)  # 5 minutes = 5/60 hours
