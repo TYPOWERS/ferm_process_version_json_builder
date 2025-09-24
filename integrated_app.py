@@ -9,6 +9,7 @@ from dash import dcc, html, Input, Output, State, callback
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 from datetime import datetime
+import pandas as pd
 import json
 
 # Import our modules
@@ -282,24 +283,35 @@ app.layout = html.Div([
                 ], width=12)
             ]),
             
-            # Inoculation time picker (global for setpoint alignment)
+            # Time display and inoculation time picker
             dbc.Row([
                 dbc.Col([
                     dbc.Card([
                         dbc.CardBody([
-                            html.H5("Inoculation Time", className="card-title"),
-                            html.P("Set the inoculation time to align setpoint data with profile timeline:", 
-                                   className="text-muted mb-3"),
-                            dbc.InputGroup([
-                                dbc.Input(
-                                    id="inoculation-datetime",
-                                    type="datetime-local",
-                                    value=datetime.now().strftime("%Y-%m-%dT%H:%M")
-                                ),
-                                dbc.Button("Update Alignment", id="update-alignment-btn", color="primary")
+                            html.H6("Process Times", className="card-title mb-2"),
+                            dbc.Row([
+                                dbc.Col([
+                                    html.Label("Inoculation:", className="text-muted small"),
+                                    html.Div(id="inoculation-time-display", className="fw-bold", children="Not set"),
+                                ], width=4),
+                                dbc.Col([
+                                    html.Label("End of Run:", className="text-muted small"),
+                                    html.Div(id="end-of-run-time-display", className="fw-bold", children="Not detected"),
+                                ], width=4),
+                                dbc.Col([
+                                    dbc.InputGroup([
+                                        dbc.Input(
+                                            id="inoculation-datetime",
+                                            type="datetime-local",
+                                            value=datetime.now().strftime("%Y-%m-%dT%H:%M"),
+                                            size="sm"
+                                        ),
+                                        dbc.Button("Update", id="update-alignment-btn", color="primary", size="sm")
+                                    ])
+                                ], width=4)
                             ])
                         ])
-                    ], className="mb-4")
+                    ], className="mb-3")
                 ], width=12)
             ]),
             
@@ -345,6 +357,7 @@ app.layout = html.Div([
     dcc.Store(id="setpoint-data", data={}),
     dcc.Store(id="profile-components", data=[]),
     dcc.Store(id="inoculation-time", data=None),
+    dcc.Store(id="end-of-run-time", data=None),
     dcc.Store(id="generated-components", data=[]),
     dcc.Store(id="selected-component", data=None),
     
@@ -461,33 +474,72 @@ def close_octopus_sidebar_on_file_open(file_clicks, file_open):
     return dash.no_update
 
 
-# Inoculation time callback - from manual input
+# Process times callback - from manual input and file detection
 @app.callback(
-    Output("inoculation-time", "data"),
+    [Output("inoculation-time", "data"),
+     Output("end-of-run-time", "data")],
     [Input("update-alignment-btn", "n_clicks"),
      Input("file-data-store", "data")],
     [State("inoculation-datetime", "value")],
     prevent_initial_call=True
 )
-def update_inoculation_time(n_clicks, file_data, datetime_value):
+def update_process_times(n_clicks, file_data, datetime_value):
     ctx = dash.callback_context
     if not ctx.triggered:
-        return dash.no_update
-    
+        return dash.no_update, dash.no_update
+
     trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-    
+
     # If manual update button was clicked
     if trigger_id == "update-alignment-btn" and n_clicks and datetime_value:
-        return datetime_value
-    
-    # If file data was loaded, try to extract inoculation time
+        # Only update inoculation time from manual input, keep existing end time
+        return datetime_value, dash.no_update
+
+    # If file data was loaded, extract both times
     elif trigger_id == "file-data-store" and file_data:
         inoculation_time = file_data.get('inoculation_time')
+        end_of_run_time = file_data.get('end_of_run_time')
+
         if inoculation_time:
             print(f"Auto-setting inoculation time from files: {inoculation_time}")
-            return inoculation_time
-    
-    return dash.no_update
+        if end_of_run_time:
+            print(f"Auto-setting end of run time from files: {end_of_run_time}")
+
+        return (inoculation_time if inoculation_time else dash.no_update,
+                end_of_run_time if end_of_run_time else dash.no_update)
+
+    return dash.no_update, dash.no_update
+
+
+# Time display formatting callbacks
+@app.callback(
+    [Output("inoculation-time-display", "children"),
+     Output("end-of-run-time-display", "children")],
+    [Input("inoculation-time", "data"),
+     Input("end-of-run-time", "data")]
+)
+def update_time_displays(inoculation_time, end_of_run_time):
+    """Format and display process times in user-friendly format"""
+    def format_time(time_str):
+        if not time_str:
+            return None
+        try:
+            # Parse the timestamp
+            dt = pd.to_datetime(time_str)
+            # Format as user-friendly string (e.g., "July 24, 2025 11:06 PM")
+            return dt.strftime("%b %d, %Y %I:%M %p")
+        except:
+            return time_str  # Fallback to original if parsing fails
+
+    inoculation_display = format_time(inoculation_time) or "Not set"
+    end_display = format_time(end_of_run_time) or "Not detected"
+
+    # Add warning if end time is missing
+    if not end_of_run_time and inoculation_time:
+        end_display = html.Span(["Not detected ", html.I(className="fas fa-exclamation-triangle text-warning")],
+                               title="No 'Unloading' state found in State file")
+
+    return inoculation_display, end_display
 
 
 # Profile builder content callback
@@ -504,10 +556,11 @@ def update_profile_builder_content(trigger):
     Output("integrated-graph", "figure"),
     [Input("profile-components", "data"),
      Input("setpoint-data", "data"),
-     Input("inoculation-time", "data")],
+     Input("inoculation-time", "data"),
+     Input("end-of-run-time", "data")],
     prevent_initial_call=True
 )
-def update_integrated_graph(profile_components, setpoint_data, inoculation_time):
+def update_integrated_graph(profile_components, setpoint_data, inoculation_time, end_of_run_time):
     """
     Main graph that overlays:
     - Profile components (blue, solid lines)
@@ -528,39 +581,105 @@ def update_integrated_graph(profile_components, setpoint_data, inoculation_time)
                 hovertemplate='Profile<br>Time: %{x:.1f}h<br>Value: %{y}<extra></extra>'
             ))
     
-    # Plot setpoint data (red, dashed) 
+    # Plot setpoint data (red, dashed) with post-run dimming
     if setpoint_data:
         for filename, file_info in setpoint_data.items():
             # Convert setpoint data for plotting
             setpoint_times, setpoint_values = convert_setpoint_for_plotting(
                 file_info['data'], inoculation_time
             )
-            
+
             if setpoint_times and setpoint_values:
-                fig.add_trace(go.Scatter(
-                    x=setpoint_times,
-                    y=setpoint_values,
-                    mode='lines',
-                    name=f'Setpoint: {file_info["parameter"]}',
-                    line=dict(color='red', width=2, dash='dash'),
-                    hovertemplate=f'{file_info["parameter"]}<br>Time: %{{x:.1f}}h<br>Value: %{{y}}<extra></extra>'
-                ))
+                # Calculate end of run time in hours from inoculation
+                end_run_hours = None
+                if end_of_run_time and inoculation_time:
+                    try:
+                        inoculation_dt = pd.to_datetime(inoculation_time, errors='coerce')
+                        end_run_dt = pd.to_datetime(end_of_run_time, errors='coerce')
+                        if not pd.isna(inoculation_dt) and not pd.isna(end_run_dt):
+                            end_run_hours = (end_run_dt - inoculation_dt).total_seconds() / 3600
+                    except:
+                        pass
+
+                # Split data into pre-run and post-run if we have end time
+                if end_run_hours is not None:
+                    # Find the split point
+                    pre_run_times, pre_run_values = [], []
+                    post_run_times, post_run_values = [], []
+
+                    for i, (t, v) in enumerate(zip(setpoint_times, setpoint_values)):
+                        if t <= end_run_hours:
+                            pre_run_times.append(t)
+                            pre_run_values.append(v)
+                        else:
+                            post_run_times.append(t)
+                            post_run_values.append(v)
+
+                    # Add continuation point to connect the lines
+                    if pre_run_times and post_run_times:
+                        post_run_times.insert(0, pre_run_times[-1])
+                        post_run_values.insert(0, pre_run_values[-1])
+
+                    # Plot pre-run data (normal)
+                    if pre_run_times:
+                        fig.add_trace(go.Scatter(
+                            x=pre_run_times,
+                            y=pre_run_values,
+                            mode='lines',
+                            name=f'Setpoint: {file_info["parameter"]}',
+                            line=dict(color='red', width=2, dash='dash'),
+                            hovertemplate=f'{file_info["parameter"]}<br>Time: %{{x:.1f}}h<br>Value: %{{y}}<extra></extra>'
+                        ))
+
+                    # Plot post-run data (dimmed)
+                    if post_run_times:
+                        fig.add_trace(go.Scatter(
+                            x=post_run_times,
+                            y=post_run_values,
+                            mode='lines',
+                            name=f'Setpoint: {file_info["parameter"]} (Post-run)',
+                            line=dict(color='lightcoral', width=1, dash='dash'),
+                            opacity=0.5,
+                            hovertemplate=f'{file_info["parameter"]} (Post-run)<br>Time: %{{x:.1f}}h<br>Value: %{{y}}<extra></extra>'
+                        ))
+                else:
+                    # No end time - plot normally
+                    fig.add_trace(go.Scatter(
+                        x=setpoint_times,
+                        y=setpoint_values,
+                        mode='lines',
+                        name=f'Setpoint: {file_info["parameter"]}',
+                        line=dict(color='red', width=2, dash='dash'),
+                        hovertemplate=f'{file_info["parameter"]}<br>Time: %{{x:.1f}}h<br>Value: %{{y}}<extra></extra>'
+                    ))
     
-    # Determine x-axis range based on data
+    # Determine axis ranges based on data
     x_max = 0
-    
-    # Get max time from profile components
-    if profile_components and profile_times:
+    y_min, y_max = None, None
+
+    # Get ranges from profile components (prioritize these for y-axis)
+    if profile_components and profile_times and profile_values:
         x_max = max(x_max, max(profile_times))
-    
-    # Get max time from setpoint data
+        y_min = min(profile_values)
+        y_max = max(profile_values)
+
+    # Get x-range from setpoint data but only use y-range if no components
     if setpoint_data:
         for filename, file_info in setpoint_data.items():
-            setpoint_times, _ = convert_setpoint_for_plotting(file_info['data'], inoculation_time)
+            setpoint_times, setpoint_values = convert_setpoint_for_plotting(file_info['data'], inoculation_time)
             if setpoint_times:
                 x_max = max(x_max, max(setpoint_times))
-    
-    # Update layout with dynamic x-axis range
+
+                # Only use setpoint y-range if no profile components exist
+                if not profile_components and setpoint_values:
+                    if y_min is None:
+                        y_min = min(setpoint_values)
+                        y_max = max(setpoint_values)
+                    else:
+                        y_min = min(y_min, min(setpoint_values))
+                        y_max = max(y_max, max(setpoint_values))
+
+    # Update layout with dynamic axis ranges
     layout_kwargs = {
         'title': "Profile & Setpoint Visualization",
         'xaxis_title': "Time (hours)",
@@ -575,9 +694,62 @@ def update_integrated_graph(profile_components, setpoint_data, inoculation_time)
         # Add 5% padding to the right
         x_range_max = x_max * 1.05
         layout_kwargs['xaxis'] = dict(range=[0, x_range_max])
+
+    # Set y-axis range if we have data, with padding
+    if y_min is not None and y_max is not None and y_min != y_max:
+        y_range = y_max - y_min
+        y_padding = y_range * 0.1  # 10% padding
+        layout_kwargs['yaxis'] = dict(range=[y_min - y_padding, y_max + y_padding])
     
     fig.update_layout(**layout_kwargs)
-    
+
+    # Add vertical line marker for end of run time
+    if end_of_run_time and inoculation_time:
+        try:
+            inoculation_dt = pd.to_datetime(inoculation_time, errors='coerce')
+            end_run_dt = pd.to_datetime(end_of_run_time, errors='coerce')
+
+            if not pd.isna(inoculation_dt) and not pd.isna(end_run_dt):
+                end_run_hours = (end_run_dt - inoculation_dt).total_seconds() / 3600
+
+                # Add the vertical line
+                fig.add_vline(
+                    x=end_run_hours,
+                    line_dash="solid",
+                    line_color="orange",
+                    line_width=4,
+                    annotation_text="End of Run",
+                    annotation_position="top"
+                )
+
+                # Also add a shape as backup
+                fig.add_shape(
+                    type="line",
+                    x0=end_run_hours, y0=0, x1=end_run_hours, y1=1,
+                    xref="x", yref="paper",
+                    line=dict(color="orange", width=4, dash="solid")
+                )
+
+                # Add text annotation
+                fig.add_annotation(
+                    x=end_run_hours,
+                    y=1.05,
+                    yref="paper",
+                    text="End of Run",
+                    showarrow=True,
+                    arrowhead=2,
+                    arrowsize=1,
+                    arrowcolor="orange",
+                    ax=0,
+                    ay=-30,
+                    font=dict(color="orange", size=12),
+                    bgcolor="white",
+                    bordercolor="orange",
+                    borderwidth=1
+                )
+        except Exception as e:
+            print(f"Error adding end of run marker: {e}")
+
     # Add annotation if no data
     if not profile_components and not setpoint_data:
         fig.add_annotation(

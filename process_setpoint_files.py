@@ -150,16 +150,51 @@ class SetpointProcessor:
             
         return None
 
+    def extract_end_of_run_time(self):
+        """Extract end of run timestamp from State file where state is 'Unloading'."""
+        if not self.data_folder:
+            return None
+
+        # Look for State file (pattern: State [UUID].all.csv)
+        pattern = os.path.join(self.data_folder, "State*.csv")
+        state_files = glob.glob(pattern)
+
+        if not state_files:
+            print("No State file found")
+            return None
+
+        try:
+            state_file = state_files[0]  # Use first match
+            print(f"Found State file: {os.path.basename(state_file)}")
+
+            # Read the file and look for Unloading timestamp
+            with open(state_file, 'r') as f:
+                for line in f:
+                    if 'Unloading' in line:
+                        # Extract timestamp from the line
+                        # Format: 2025-07-31T19:49:07.8355362,,Unloading
+                        timestamp = line.split(',')[0]
+                        print(f"Found end of run time: {timestamp}")
+                        return timestamp
+
+        except Exception as e:
+            print(f"Error reading State file: {e}")
+
+        return None
+
     def discover_files(self):
         """Find all _SP files and categorize them by parameter type."""
         if not self.data_folder:
-            return {'variable_sp': [], 'named_sp': [], 'inoculation_time': None}
+            return {'variable_sp': [], 'named_sp': [], 'inoculation_time': None, 'end_of_run_time': None}
             
         pattern = os.path.join(self.data_folder, "*_SP*.csv")
         self.setpoint_files = glob.glob(pattern)
         
         # Extract inoculation time from Reference times file
         inoculation_time = self.extract_inoculation_time()
+
+        # Extract end of run time from State file
+        end_of_run_time = self.extract_end_of_run_time()
         
         # Separate files into Variable SP (UUID-like) and Named SP groups
         variable_sp_files = []
@@ -206,9 +241,10 @@ class SetpointProcessor:
                     self.parameter_groups[param_name] = []
                 self.parameter_groups[param_name].append(file_path)
         
-        # Add inoculation time to the return data
+        # Add inoculation time and end of run time to the return data
         result = self.grouped_files.copy()
         result['inoculation_time'] = inoculation_time
+        result['end_of_run_time'] = end_of_run_time
         return result
     
     def read_setpoint_file(self, file_path: str) -> pd.DataFrame:

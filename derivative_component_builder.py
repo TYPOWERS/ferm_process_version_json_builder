@@ -23,14 +23,22 @@ class DerivativeComponentBuilder:
     def __init__(self, app):
         self.app = app
         self.setup_callbacks()
+
+    def _round_to_sig_figs(self, value, sig_figs=3):
+        """Round value to specified number of significant figures"""
+        if value == 0:
+            return 0
+        import math
+        return round(value, -int(math.floor(math.log10(abs(value)))) + (sig_figs - 1))
     
-    def analyze_setpoint_data_derivative(self, setpoint_data: Dict, inoculation_time: str = None) -> List[Dict]:
+    def analyze_setpoint_data_derivative(self, setpoint_data: Dict, inoculation_time: str = None, end_of_run_time: str = None) -> List[Dict]:
         """
         Analyze setpoint data using multi-scale derivative analysis
         
         Args:
             setpoint_data: Dict of processed setpoint files
             inoculation_time: Inoculation datetime string for time alignment
+            end_of_run_time: End of run datetime string for limiting components
             
         Returns:
             List of component dictionaries
@@ -58,8 +66,8 @@ class DerivativeComponentBuilder:
                 
             df = df.sort_values('timestamp').reset_index(drop=True)
             
-            # Align timeline with inoculation time
-            aligned_df = self._align_timeline(df, inoculation_time)
+            # Align timeline with inoculation time and limit to end of run
+            aligned_df = self._align_timeline(df, inoculation_time, end_of_run_time)
             
             if len(aligned_df) < 10:  # Need minimum points for derivative analysis
                 print(f"  ⚠️ Not enough data points for derivative analysis ({len(aligned_df)} points)")
@@ -80,7 +88,11 @@ class DerivativeComponentBuilder:
         
         # Consolidate and refine components
         consolidated = self._consolidate_derivative_components(all_components)
-        
+
+        # Truncate components that extend past end of run time
+        if end_of_run_time and inoculation_time:
+            consolidated = self._truncate_components_to_end_time(consolidated, inoculation_time, end_of_run_time)
+
         # Clean up analysis-specific metadata
         for comp in consolidated:
             comp.pop('confidence', None)
@@ -97,8 +109,8 @@ class DerivativeComponentBuilder:
         print(f"🎯 Derivative analysis complete: {len(consolidated)} components generated")
         return consolidated
     
-    def _align_timeline(self, df: pd.DataFrame, inoculation_time: str = None) -> pd.DataFrame:
-        """Align setpoint timeline with inoculation time"""
+    def _align_timeline(self, df: pd.DataFrame, inoculation_time: str = None, end_of_run_time: str = None) -> pd.DataFrame:
+        """Align setpoint timeline with inoculation time and optionally limit to end of run"""
         if not inoculation_time:
             # If no inoculation time, start from 0
             start_time = df['timestamp'].min()
@@ -107,10 +119,10 @@ class DerivativeComponentBuilder:
             # Align with inoculation time
             inoculation_dt = pd.to_datetime(inoculation_time, errors='coerce')
             df['process_time_hours'] = (df['timestamp'] - inoculation_dt).dt.total_seconds() / 3600
-            
+
             # Filter to only include post-inoculation data
             df = df[df['process_time_hours'] >= 0].reset_index(drop=True)
-        
+
         return df
     
     def _detect_components_derivative(self, df: pd.DataFrame, parameter_name: str) -> List[Dict]:
@@ -456,14 +468,14 @@ class DerivativeComponentBuilder:
             if seg['type'] == 'constant':
                 component.update({
                     'type': 'constant',
-                    'setpoint': round(seg['start_value'], 1)
+                    'setpoint': self._round_to_sig_figs(seg['start_value'])
                 })
             
             elif seg['type'] == 'ramp':
                 component.update({
                     'type': 'ramp',
-                    'start_temp': round(seg['start_value'], 1),
-                    'end_temp': round(seg['end_value'], 1)
+                    'start_temp': self._round_to_sig_figs(seg['start_value']),
+                    'end_temp': self._round_to_sig_figs(seg['end_value'])
                 })
             
             elif seg['type'] == 'pid':
@@ -474,17 +486,17 @@ class DerivativeComponentBuilder:
                 component.update({
                     'type': 'pid',
                     'controller': f"Auto-detected PID Controller ({parameter_name})",
-                    'setpoint': round(avg_value, 1),
-                    'min_allowed': round(avg_value - value_range, 1),
-                    'max_allowed': round(avg_value + value_range, 1)
+                    'setpoint': self._round_to_sig_figs(avg_value),
+                    'min_allowed': self._round_to_sig_figs(avg_value - value_range),
+                    'max_allowed': self._round_to_sig_figs(avg_value + value_range)
                 })
             
             elif seg['type'] == 'complex':
                 # For complex patterns, create a ramp as best approximation
                 component.update({
                     'type': 'ramp',
-                    'start_temp': round(seg['start_value'], 1),
-                    'end_temp': round(seg['end_value'], 1)
+                    'start_temp': self._round_to_sig_figs(seg['start_value']),
+                    'end_temp': self._round_to_sig_figs(seg['end_value'])
                 })
                 component['confidence'] = min(component['confidence'], 0.6)
             
@@ -615,7 +627,82 @@ class DerivativeComponentBuilder:
                 }
         
         return None
-    
+
+    def _truncate_components_to_end_time(self, components: List[Dict], inoculation_time: str, end_of_run_time: str) -> List[Dict]:
+        """Truncate components that extend past end of run time, with interpolation for ramps"""
+        try:
+            inoculation_dt = pd.to_datetime(inoculation_time, errors='coerce')
+            end_run_dt = pd.to_datetime(end_of_run_time, errors='coerce')
+            if pd.isna(inoculation_dt) or pd.isna(end_run_dt):
+                print("  → Warning: Could not parse time values for truncation")
+                return components
+
+            # Calculate total run time (end of run - inoculation)
+            total_run_time = (end_run_dt - inoculation_dt).total_seconds() / 3600
+            print(f"  → Total run time: {total_run_time:.1f}h (from inoculation to end of run)")
+
+            if not components:
+                return components
+
+            # Calculate cumulative time for each component to find which extends past end
+            truncated_components = []
+            cumulative_time = 0
+
+            for i, comp in enumerate(components):
+                comp_duration = comp.get('duration', 0)
+                comp_end_time = cumulative_time + comp_duration
+
+                print(f"  → Component {i+1} ({comp['type']}): {cumulative_time:.1f}h - {comp_end_time:.1f}h (duration: {comp_duration:.1f}h)")
+
+                if cumulative_time >= total_run_time:
+                    # This component starts after end of run - skip it
+                    print(f"    → Skipping (starts after end of run at {total_run_time:.1f}h)")
+                    break
+
+                elif comp_end_time > total_run_time:
+                    # This component extends past end of run - truncate it
+                    # New duration = total_run_time - sum of all previous components
+                    remaining_time = total_run_time - cumulative_time
+
+                    print(f"    → Extends past end of run - truncating:")
+                    print(f"    → Total run time: {total_run_time:.1f}h")
+                    print(f"    → Time used by previous components: {cumulative_time:.1f}h")
+                    print(f"    → Remaining time for this component: {remaining_time:.1f}h")
+
+                    truncated_comp = comp.copy()
+                    truncated_comp['duration'] = remaining_time  # Don't round yet, keep exact
+
+                    # Handle ramp interpolation
+                    if comp['type'] == 'ramp':
+                        start_temp = comp['start_temp']
+                        end_temp = comp['end_temp']
+                        # Calculate interpolated end temperature based on progress
+                        progress = remaining_time / comp_duration if comp_duration > 0 else 0
+                        interpolated_end_temp = start_temp + (end_temp - start_temp) * progress
+                        truncated_comp['end_temp'] = self._round_to_sig_figs(interpolated_end_temp)
+                        print(f"    → Ramp interpolation: {start_temp} → {interpolated_end_temp:.3f} (progress: {progress:.2%})")
+
+                    # Round to 5-minute precision for final duration
+                    truncated_comp['duration'] = round(remaining_time / (5/60)) * (5/60)  # 5 minutes = 5/60 hours
+                    print(f"    → Final duration (rounded to 5min): {truncated_comp['duration']:.3f}h")
+
+                    truncated_components.append(truncated_comp)
+                    break  # This was the last component
+
+                else:
+                    # Component ends before end of run - keep as is
+                    print(f"    → Keeping as-is (ends before run end)")
+                    truncated_components.append(comp)
+
+                cumulative_time = comp_end_time
+
+            print(f"  → Result: {len(components)} → {len(truncated_components)} components after truncation")
+            return truncated_components
+
+        except Exception as e:
+            print(f"  → Error during truncation: {e}")
+            return components
+
     def setup_callbacks(self):
         """Setup callbacks for derivative component builder integration"""
         
@@ -623,10 +710,11 @@ class DerivativeComponentBuilder:
             Output("profile-components", "data", allow_duplicate=True),
             [Input("setpoint-data", "data")],
             [State("inoculation-time", "data"),
+             State("end-of-run-time", "data"),
              State("profile-components", "data")],
             prevent_initial_call=True
         )
-        def analyze_with_derivatives_auto(setpoint_data, inoculation_time, existing_components):
+        def analyze_with_derivatives_auto(setpoint_data, inoculation_time, end_of_run_time, existing_components):
             print(f"🔍 Derivative callback triggered! setpoint_data: {bool(setpoint_data)}, existing_components: {len(existing_components or [])}")
             
             if not setpoint_data:
@@ -636,7 +724,7 @@ class DerivativeComponentBuilder:
             try:
                 print(f"🚀 Starting derivative analysis on {len(setpoint_data)} files...")
                 # Run the derivative analysis engine automatically
-                generated_components = self.analyze_setpoint_data_derivative(setpoint_data, inoculation_time)
+                generated_components = self.analyze_setpoint_data_derivative(setpoint_data, inoculation_time, end_of_run_time)
                 print(f"🎯 Generated {len(generated_components)} components using derivative analysis")
                 
                 # Replace existing auto-generated components with new derivative-based ones

@@ -135,8 +135,9 @@ class FileSelector:
             self.processor.data_folder = folder_path
             grouped_files = self.processor.discover_files()
             
-            # Extract inoculation time from the grouped files result
+            # Extract times from the grouped files result
             inoculation_time = grouped_files.get('inoculation_time')
+            end_of_run_time = grouped_files.get('end_of_run_time')
             
             total_files = len(grouped_files.get('named_sp', [])) + len(grouped_files.get('variable_sp', []))
             
@@ -149,11 +150,17 @@ class FileSelector:
                     f"🔢 Variable SP: {len(grouped_files.get('variable_sp', []))} files"
                 ]
                 
-                # Add inoculation time to status if found
+                # Add times to status if found
                 if inoculation_time:
                     status_messages.extend([
                         html.Br(),
                         f"🕐 Inoculation time: {inoculation_time}"
+                    ])
+
+                if end_of_run_time:
+                    status_messages.extend([
+                        html.Br(),
+                        f"🏁 End of run time: {end_of_run_time}"
                     ])
                 
                 status = dbc.Alert(status_messages, color="success")
@@ -358,10 +365,11 @@ class FileSelector:
              Output("processing-status", "children")],
             [Input("process-files-btn", "n_clicks")],
             [State("selected-setpoint-files", "data"),
-             State("inoculation-time", "data")],
+             State("inoculation-time", "data"),
+             State("end-of-run-time", "data")],
             prevent_initial_call=True
         )
-        def process_selected_files(n_clicks, selected_files, inoculation_time):
+        def process_selected_files(n_clicks, selected_files, inoculation_time, end_of_run_time):
             if not n_clicks or not selected_files:
                 return dash.no_update, dash.no_update
             
@@ -417,7 +425,9 @@ class FileSelector:
                 html.Br(),
                 f"✅ Successfully processed: {success_count}/{len(selected_files)} files",
                 html.Br(),
-                f"🕐 Inoculation time: {inoculation_time or 'Not set'}"
+                f"🕐 Inoculation time: {inoculation_time or 'Not set'}",
+                html.Br(),
+                f"🏁 End of run time: {end_of_run_time or 'Not detected'}"
             ], color="info", className="mb-3"))
             
             print(f"Processing complete: {success_count}/{len(selected_files)} files successful")
