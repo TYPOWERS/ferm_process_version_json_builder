@@ -10,15 +10,23 @@ import plotly.graph_objects as go
 import json
 import uuid
 import dash_bootstrap_components as dbc
+import tempfile
+import os
+import matplotlib.pyplot as plt
+import numpy as np
 
 # Process units mapping
 PROCESS_UNITS = {
+    "Temperature": "C",
     "Agitation": "rpm",
-    "pH": "",
+    "pH Lower": "",
+    "pH Upper": "",
     "Acid": "mL/hr",
     "Base": "mL/hr",
-    "Media A": "mL/hr",
-    "Temperature": "°C"
+    "Feed 1": "mL/hr",
+    "Feed 2": "mL/hr",
+    "Feed 3": "mL/hr",
+    "DO": "%",
 }
 
 
@@ -45,6 +53,19 @@ class ProfileBuilder:
             updated_components.append(updated_comp)
 
         return updated_components
+
+    def generate_clean_profile_json(self, components):
+        """Generate clean profile JSON for storage (components only, no metadata)"""
+        if not components:
+            return {"profile": []}
+
+        # Remove internal 'id' field from components, keep original structure
+        clean_components = []
+        for comp in components:
+            clean_comp = {k: v for k, v in comp.items() if k not in ["id", "index", "start_time", "end_time"]}
+            clean_components.append(clean_comp)
+
+        return {"profile": clean_components}
 
     def generate_profile_metadata(self, components, process_type):
         """Generate metadata for the profile"""
@@ -147,12 +168,8 @@ class ProfileBuilder:
                                     dcc.Dropdown(
                                         id="process-type",
                                         options=[
-                                            {"label": f"Agitation ({PROCESS_UNITS['Agitation']})", "value": "Agitation"},
-                                            {"label": f"pH ({PROCESS_UNITS['pH']})", "value": "pH"},
-                                            {"label": f"Acid ({PROCESS_UNITS['Acid']})", "value": "Acid"},
-                                            {"label": f"Base ({PROCESS_UNITS['Base']})", "value": "Base"},
-                                            {"label": f"Media A ({PROCESS_UNITS['Media A']})", "value": "Media A"},
-                                            {"label": f"Temperature ({PROCESS_UNITS['Temperature']})", "value": "Temperature"}
+                                            {"label": f"{process_type} ({unit})" if unit else process_type, "value": process_type}
+                                            for process_type, unit in PROCESS_UNITS.items()
                                         ],
                                         placeholder="Select process type"
                                     )
@@ -243,10 +260,13 @@ class ProfileBuilder:
                             dbc.Row([
                                 dbc.Col([
                                     dbc.Button("Clear All", id="clear-btn", color="danger", outline=True)
-                                ], width=6),
+                                ], width=4),
                                 dbc.Col([
                                     dbc.Button("Export JSON", id="export-btn", color="success", disabled=True)
-                                ], width=6)
+                                ], width=4),
+                                dbc.Col([
+                                    dbc.Button("Upload to Benchling", id="upload-benchling-btn", color="primary", disabled=True)
+                                ], width=4)
                             ]),
 
                             # JSON output display
@@ -604,13 +624,21 @@ class ProfileBuilder:
                 return [], [html.P("Add components to build your profile", className="text-muted text-center")], "0 components"
             return dash.no_update, dash.no_update, dash.no_update
         
-        # Export JSON callback
+        # Export JSON and Upload buttons callback
         @self.app.callback(
-            Output("export-btn", "disabled"),
-            [Input("profile-components", "data")]
+            [Output("export-btn", "disabled"),
+             Output("upload-benchling-btn", "disabled")],
+            [Input("profile-components", "data"),
+             Input("process-type", "value")]
         )
-        def update_export_button(components):
-            return len(components or []) == 0
+        def update_action_buttons(components, process_type):
+            has_components = len(components or []) > 0
+            has_process_type = process_type is not None and process_type != ""
+
+            export_disabled = not has_components
+            upload_disabled = not (has_components and has_process_type)
+
+            return export_disabled, upload_disabled
 
         # Export JSON data callback
         @self.app.callback(
@@ -651,7 +679,104 @@ class ProfileBuilder:
                 "overflow": "auto",
                 "maxHeight": "300px"
             })
-        
+
+        # Upload to Benchling callback
+        @self.app.callback(
+            Output("json-output", "children", allow_duplicate=True),
+            [Input("upload-benchling-btn", "n_clicks")],
+            [State("profile-components", "data"),
+             State("process-type", "value")],
+            prevent_initial_call=True
+        )
+        def upload_to_benchling(n_clicks, components, process_type):
+            print(f"🔄 Upload callback triggered: n_clicks={n_clicks}, components={len(components or [])}, process_type={process_type}")
+
+            if not n_clicks or not components or not process_type:
+                print("❌ Upload conditions not met")
+                return dash.no_update
+
+            print("✅ Starting Benchling upload...")
+            # Generate enhanced profile JSON (same as export format)
+            # Calculate timing for components
+            timed_components = self.calculate_component_timing(components)
+
+            # Remove internal 'id' field from components
+            clean_components = [{k: v for k, v in comp.items() if k != "id"} for comp in timed_components]
+
+            # Generate metadata
+            metadata = self.generate_profile_metadata(components, process_type)
+
+            # Create enhanced JSON structure (same as export)
+            enhanced_profile = {
+                "profile": clean_components,
+                "summary": metadata
+            }
+
+            # Create a simple visualization using matplotlib
+            image_path = self._create_profile_image(components, process_type)
+
+            # Initialize BenchlingAPI
+            from BenchlingAPI import BenchlingAPI
+            benchling_api = BenchlingAPI('Test', 'automation')
+
+            # Upload to Benchling if it doesn't exist
+            result, exists_flag = benchling_api.create_fermentation_process_profile_if_not_exists(
+                profile_type=process_type,
+                profile_json=enhanced_profile,
+                image_path=image_path
+            )
+            try:
+
+                # Clean up temporary image file
+                if os.path.exists(image_path):
+                    os.remove(image_path)
+
+                if not exists_flag and result:
+                    return html.Div([
+                        dbc.Alert([
+                            f"✅ Profile uploaded to Benchling successfully! Name and Barcode: {result.name} ",
+                            html.A("View in Benchling", href=result.web_url, target="_blank")
+                        ],
+                            color="success",
+                            dismissable=True
+                        )
+                    ])
+                elif exists_flag and result:
+                    return html.Div([
+                        dbc.Alert([
+                            "ℹ️ Profile already exists in Benchling. ",
+                            html.A("View in Benchling", href=result.web_url, target="_blank")
+                        ],
+                            color="info",
+                            dismissable=True
+                        )
+                    ])
+                
+                else:
+                    return html.Div([
+                        dbc.Alert(
+                            "Something went wrong during upload, but no error was raised.",
+                            color="info",
+                            dismissable=True
+                        )
+                    ])
+
+            except Exception as e:
+                import traceback
+                full_error = traceback.format_exc()
+                print(f"❌ Full Benchling upload error:")
+                print(full_error)
+                print(f"❌ Error type: {type(e).__name__}")
+                print(f"❌ Error message: {str(e)}")
+
+                return html.Div([
+                    dbc.Alert(
+                        f"❌ Error uploading to Benchling: {str(e)}",
+                        color="danger",
+                        dismissable=True
+                    )
+                ])
+
         # Update component list when store changes
         @self.app.callback(
             [Output("component-list", "children", allow_duplicate=True),
@@ -661,13 +786,15 @@ class ProfileBuilder:
             prevent_initial_call=True
         )
         def update_component_list_display(components, process_type):
-            if not components:
+            components = components or []  # Ensure components is never None
+
+            if len(components) == 0:
                 return [html.P("Add components to build your profile", className="text-muted text-center")], "0 components"
 
             component_elements = self._create_component_elements(components, process_type)
             count_text = f"{len(components)} components"
             return component_elements, count_text
-        
+
         # Delete component callback
         @self.app.callback(
             Output("profile-components", "data", allow_duplicate=True),
@@ -970,6 +1097,49 @@ class ProfileBuilder:
                 ])
             ])
         ], className="mb-2", color="light", outline=True)
+
+    def _create_profile_image(self, components, process_type):
+        """Create a simple profile visualization image for Benchling upload"""
+        if not components:
+            return None
+
+        # Generate profile timeline
+        t_points, y_points = [], []
+        current_time = 0
+
+        for comp in components:
+            dur = comp["duration"]
+            if comp["type"] == "constant":
+                t_points += [current_time, current_time + dur]
+                y_points += [comp["setpoint"], comp["setpoint"]]
+            elif comp["type"] == "ramp":
+                t_points += [current_time, current_time + dur]
+                y_points += [comp["start_setpoint"], comp["end_setpoint"]]
+            elif comp["type"] == "pwm":
+                # Simplified PWM representation
+                t_points += [current_time, current_time + dur]
+                y_points += [comp["low_temp"], comp["high_temp"]]
+            elif comp["type"] == "pid":
+                t_points += [current_time, current_time + dur]
+                y_points += [comp["setpoint"], comp["setpoint"]]
+
+            current_time += dur
+
+        # Create matplotlib plot
+        plt.figure(figsize=(10, 6))
+        plt.plot(t_points, y_points, 'b-', linewidth=2)
+        plt.xlabel('Time (hours)')
+        plt.ylabel(f'{process_type} ({self.get_process_unit(process_type)})')
+        plt.title(f'{process_type} Profile')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+
+        # Save to temporary file
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+        plt.savefig(temp_file.name, dpi=150, bbox_inches='tight')
+        plt.close()
+
+        return temp_file.name
 
 
 # Function to integrate with main app

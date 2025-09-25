@@ -39,6 +39,13 @@ python app.py
 ```
 The app runs with `debug=True` by default, enabling hot reloading during development.
 
+### Testing
+```bash
+# Run ramp detection tests
+python test_ramp_detection.py
+```
+Tests focus on the pattern recognition algorithms used for automatic component generation.
+
 ## Project Architecture
 
 ### Core Structure
@@ -58,6 +65,7 @@ The project follows a modular structure with multiple integrated applications:
 - `derivative_component_builder.py`: Extended analysis capabilities for component generation
 - `profile_builder.py`: Core profile building functionality
 - `process_setpoint_files.py`: Setpoint file processing and visualization
+- `BenchlingAPI.py`: Benchling SDK integration for database operations
 
 **Testing and Development:**
 - `test_ramp_detection.py`: Tests for ramp detection algorithms
@@ -119,7 +127,12 @@ The application includes sophisticated analysis engines that can automatically d
 - Replaces existing manual components when approved
 
 ### Benchling Integration
-Use benchling-sdk for any Benchling database operations to check for existing profiles and prevent duplicates.
+The `BenchlingAPI.py` module provides Benchling SDK integration for database operations:
+- Uses `benchling-sdk` with client credentials OAuth2 authentication
+- Includes webhook verification using boto3 for AWS integration
+- Provides methods for checking existing profiles and preventing duplicates
+- Modular design with separate functions for different Benchling operations
+- Uses `APP_DEFINITION_ID = "appdef_kd1BeumS5Q"` for app-specific operations
 
 ### Technology Stack
 - **Frontend Framework**: Dash with Bootstrap components (dash-bootstrap-components)
@@ -143,10 +156,12 @@ Use benchling-sdk for any Benchling database operations to check for existing pr
 - **Component isolation**: Each sidebar and feature area maintained separately
 
 ## Code Style
-- Use benchling sdk for any benchling interaction
+- Use benchling-sdk for any Benchling interaction (see `BenchlingAPI.py`)
 - Follow Dash callback patterns with proper input/output/state declarations
 - Use Bootstrap classes for consistent styling
 - Implement proper error handling for form validation
 - Maintain modular structure when adding new features
 - Use UUID generation for unique component tracking
 - Round numerical values consistently (1 decimal for measurements, 5-minute duration precision)
+- Process units mapping defined in `PROCESS_UNITS` dictionary in `profile_builder.py`
+- Each module should handle its own callback registration and return a layout getter function

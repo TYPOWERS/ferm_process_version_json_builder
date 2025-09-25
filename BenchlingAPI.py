@@ -351,84 +351,62 @@ class BenchlingAPI:
         return False
     def create_fermentation_process_profile(self, profile_type: str, profile_json: Dict,  image_path: str):
         """Create fermentation process profile custom entity"""
-        try:
-            type_api_id=test_api.get_dropdown_option_api_id('Ferm Profile Type',profile_type)
-            blob_id = self.upload_picture_blob(image_path, f'{profile_type} Profile.png')
-            ferm_process_profile = self.benchling.custom_entities.create(
-                entity=CustomEntityCreate(
-                    schema_id='ts_Z5ZMbKkAkL', 
-                    name='Ferm Profile',
-                    registry_id=self.REGISTRY_ID,
-                    naming_strategy=NamingStrategy.REPLACE_NAMES_FROM_PARTS,
-                    fields=fields({
-                        'JSON Profile': {'value': json.dumps(profile_json)},
-                        'Type': {'value': type_api_id},
-                        'Profile Image': {'value': blob_id}
-                    })
-                )
+        type_api_id=self.get_dropdown_option_api_id('Ferm Profile Type',profile_type)
+        blob_id = self.upload_picture_blob(image_path, f'{profile_type} Profile.png')
+        ferm_process_profile = self.benchling.custom_entities.create(
+            entity=CustomEntityCreate(
+                schema_id='ts_Z5ZMbKkAkL', 
+                name='Ferm Profile',
+                registry_id=self.REGISTRY_ID,
+                naming_strategy=NamingStrategy.REPLACE_NAMES_FROM_PARTS,
+                fields=fields({
+                    'JSON Profile': {'value': json.dumps(profile_json)},
+                    'Type': {'value': type_api_id},
+                    'Profile Image': {'value': blob_id}
+                })
             )
+            )
+        try:
+            print(f"Created fermentation process profile: {ferm_process_profile.id}")
             return ferm_process_profile
         except Exception as e:
             debug_msg(1, f"Error creating fermentation process profile: {e}")
             return None
+    def create_fermentation_process_profile_if_not_exists(self, profile_type: str, profile_json: Dict,  image_path: str):
+        """Create fermentation process profile custom entity if not exists"""
+        profile_exists = False
+        # Get entities filtered by profile type
+        type_api_id = self.get_dropdown_option_api_id('Ferm Profile Type', profile_type)
+        pages = self.benchling.custom_entities.list(schema_id='ts_Z5ZMbKkAkL', schema_fields={'Type': type_api_id})
+        for page in pages:
+            for entity in page:
+                existing_json_string = entity.fields.additional_properties['JSON Profile'].value
+
+                # Skip empty or None JSON strings
+                if not existing_json_string or existing_json_string.strip() == "":
+                    print(f"Skipping entity {entity.id} - empty JSON profile")
+                    continue
+
+                try:
+                    existing_json = json.loads(existing_json_string)
+                    if existing_json.get('profile') == profile_json.get('profile'):
+                        profile_exists = True
+                        print(f"Profile already exists: {entity.web_url}")
+                        return entity,True
+                except json.JSONDecodeError as e:
+                    print(f"Skipping entity {entity.id} - invalid JSON: {e}")
+                    continue
+
+        if not profile_exists:
+            print("Profile does not exist, creating new one...")
+            print(f"type: {profile_type}\nimage path: {image_path}\nProfile JSON: {json.dumps(profile_json, indent=2)}")
+            return self.create_fermentation_process_profile(profile_type, profile_json, image_path),False
+        return None,None
 # Example usage
-profile_json={
-  "profile": [
-    {
-      "type": "constant",
-      "setpoint": 0,
-      "duration": 5,
-      "parameter": "Stir speed_SP (rpm)"
-    },
-    {
-      "type": "ramp",
-      "start_temp": 500,
-      "end_temp": 1550,
-      "duration": 13.13,
-      "parameter": "Stir speed_SP (rpm)"
-    },
-    {
-      "type": "constant",
-      "setpoint": 1550,
-      "duration": 146.56,
-      "parameter": "Stir speed_SP (rpm)"
-    }
-  ]
-}
 if __name__ == "__main__":
     # Test the rewritten API
     test_api = BenchlingAPI('Test', 'automation')
-
-    # Get all JSON profiles from Benchling
-    profile_jsons = []
-    pages = test_api.benchling.custom_entities.list(schema_id='ts_Z5ZMbKkAkL')
-    for page in pages:
-        for entity in page:
-            json_string = entity.fields.additional_properties['JSON Profile'].value
-            profile_jsons.append(json.loads(json_string))  # Parse JSON string to dict
-
-    # Now profile_jsons is a list of dictionaries, not JSON strings
-    print(f"Found {len(profile_jsons)} profiles")
-
-    # Example: Check if a new profile already exists
-    new_profile = {
-        "profile": [
-            {"type": "constant", "setpoint": 25, "duration": 5, "parameter": "Temperature"},
-            {"type": "ramp", "start_temp": 25, "end_temp": 37, "duration": 2, "parameter": "Temperature"}
-        ]
-    }
-
-    # Method 1: Simple comparison (exact match)
-    profile_exists = new_profile in profile_jsons
-    print(f"Profile exists (exact match): {profile_exists}")
-
-    # Method 2: Compare just the profile components
-    for i, existing_profile in enumerate(profile_jsons):
-        if existing_profile.get('profile') == new_profile.get('profile'):
-            print(f"Found matching profile at index {i}")
-            break
-    else:
-        print("No matching profile found")
+    test_api.create_fermentation_process_profile_if_not_exists("Temperature", {"profile": []}, "path/to/image.png")
     #test_api.bulk_get_plates_contents_id_name_and_barcode_from_barcodes(['96WP934'])
     #df=pd.DataFrame({'sample': ['bfi_sSdeNLKpNy', 'bfi_k0DN4pvpVv'], 'raw_luminescence': [100, 200]})
     #print(test_api.FOLDER_AUTOMATIONS)
