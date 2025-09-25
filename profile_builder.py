@@ -15,18 +15,18 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Process units mapping
+# Process units mapping with colors
 PROCESS_UNITS = {
-    "Temperature": "C",
-    "Agitation": "rpm",
-    "pH Lower": "",
-    "pH Upper": "",
-    "Acid": "mL/hr",
-    "Base": "mL/hr",
-    "Feed 1": "mL/hr",
-    "Feed 2": "mL/hr",
-    "Feed 3": "mL/hr",
-    "DO": "%",
+    "Temperature": {"unit": "C", "color": "#FF6B35"},      # Orange-red
+    "Agitation": {"unit": "rpm", "color": "#4ECDC4"},      # Teal
+    "pH Lower": {"unit": "", "color": "#45B7D1"},          # Light blue
+    "pH Upper": {"unit": "", "color": "#96CEB4"},          # Light green
+    "Acid": {"unit": "mL/hr", "color": "#FECA57"},         # Yellow
+    "Base": {"unit": "mL/hr", "color": "#FF9FF3"},         # Pink
+    "Feed 1": {"unit": "mL/hr", "color": "#54A0FF"},       # Blue
+    "Feed 2": {"unit": "mL/hr", "color": "#5F27CD"},       # Purple
+    "Feed 3": {"unit": "mL/hr", "color": "#00D2D3"},       # Cyan
+    "DO": {"unit": "%", "color": "#FF6348"},               # Red-orange
 }
 
 
@@ -37,7 +37,13 @@ class ProfileBuilder:
 
     def get_process_unit(self, process_type):
         """Get unit for a given process type"""
-        return PROCESS_UNITS.get(process_type, "")
+        process_info = PROCESS_UNITS.get(process_type, {})
+        return process_info.get("unit", "")
+
+    def get_process_color(self, process_type):
+        """Get color for a given process type"""
+        process_info = PROCESS_UNITS.get(process_type, {})
+        return process_info.get("color", "#1f77b4")  # Default matplotlib blue
 
     def calculate_component_timing(self, components):
         """Calculate start_time and end_time for each component"""
@@ -168,8 +174,8 @@ class ProfileBuilder:
                                     dcc.Dropdown(
                                         id="process-type",
                                         options=[
-                                            {"label": f"{process_type} ({unit})" if unit else process_type, "value": process_type}
-                                            for process_type, unit in PROCESS_UNITS.items()
+                                            {"label": f"{process_type} ({info['unit']})" if info['unit'] else process_type, "value": process_type}
+                                            for process_type, info in PROCESS_UNITS.items()
                                         ],
                                         placeholder="Select process type"
                                     )
@@ -1127,7 +1133,8 @@ class ProfileBuilder:
 
         # Create matplotlib plot
         plt.figure(figsize=(10, 6))
-        plt.plot(t_points, y_points, 'b-', linewidth=2)
+        color = self.get_process_color(process_type)
+        plt.plot(t_points, y_points, color=color, linewidth=2)
         plt.xlabel('Time (hours)')
         plt.ylabel(f'{process_type} ({self.get_process_unit(process_type)})')
         plt.title(f'{process_type} Profile')
